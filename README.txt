@@ -3,8 +3,8 @@ Shopping Sessions - Databricks Buildathon
 
 Run Instructions:
 1. Set environment variables (optional):
-   - DATA_DIR=/data (default: ./data)
-   - OUTPUT_DIR=/output (default: ./output)
+   - DATA_DIR=/data (default: /data)
+   - OUTPUT_DIR=/output (default: /output)
 
 2. Run the pipeline:
    python process.py
@@ -35,3 +35,7 @@ Limitations:
 - Sessionization is daily (not 30-min inactivity timeout)
 - User ID linking uses simple lookup table
 - Attribution is first campaign per user (not per session)
+
+Input files expected:
+- /data/events.csv (or any CSV with click-stream events)
+- /data/user_id_links.csv (optional, links aliases to canonical IDs)
