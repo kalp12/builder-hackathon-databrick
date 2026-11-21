@@ -23,11 +23,48 @@ def main():
     con.execute("SET threads TO 8")
     con.execute("SET enable_progress_bar TO false")
 
-    # Step 1: Read all events with optimized CSV parsing
-    con.execute(f"""
-        CREATE TABLE events AS
-        SELECT * FROM read_csv_auto('{DATA_DIR}/events.csv')
-    """)
+    # List files in DATA_DIR for debugging
+    print(f"Data directory: {DATA_DIR}")
+    print(f"Data exists: {DATA_DIR.exists()}")
+
+    if DATA_DIR.exists():
+        files = list(DATA_DIR.rglob('*'))
+        print(f"Files found: {len(files)}")
+        for f in files[:20]:  # Show first 20 files
+            print(f"  {f.relative_to(DATA_DIR) if f.is_file() else f}")
+
+    # Step 1: Read all events using DuckDB's glob pattern
+    # Try to find events.csv first, then fall back to any csv files
+    events_pattern = f"{DATA_DIR}/events.csv"
+    alt_pattern = f"{DATA_DIR}/**/*.csv"
+
+    try:
+        con.execute(f"""
+            CREATE TABLE events AS
+            SELECT * FROM read_csv_auto('{events_pattern}')
+        """)
+        print(f"Loaded events from: {events_pattern}")
+    except Exception as e:
+        print(f"Failed to load from {events_pattern}: {e}")
+        # Try reading all CSV files in /data/
+        try:
+            con.execute(f"""
+                CREATE TABLE events AS
+                SELECT * FROM read_csv_auto('{DATA_DIR}/*.csv', hive_partitioning=true)
+            """)
+            print(f"Loaded events from: {DATA_DIR}/*.csv")
+        except Exception as e2:
+            print(f"Failed to load from {DATA_DIR}/*.csv: {e2}")
+            # Try glob pattern
+            try:
+                con.execute(f"""
+                    CREATE TABLE events AS
+                    SELECT * FROM read_csv_auto('{alt_pattern}', union_by_name=true)
+                """)
+                print(f"Loaded events from: {alt_pattern}")
+            except Exception as e3:
+                print(f"Failed to load from glob pattern: {e3}")
+                raise
 
     # Get column names dynamically
     cols = [c[0] for c in con.execute("DESCRIBE events").fetchall()]
@@ -44,10 +81,32 @@ def main():
     """)
 
     # Step 3: Link user IDs (from user_id_links.csv)
-    con.execute(f"""
-        CREATE TABLE user_links AS
-        SELECT * FROM read_csv_auto('{DATA_DIR}/user_id_links.csv')
-    """)
+    user_links_found = False
+    user_links_pattern = f"{DATA_DIR}/user_id_links.csv"
+    alt_links_pattern = f"{DATA_DIR}/**/user_id_links.csv"
+
+    try:
+        con.execute(f"""
+            CREATE TABLE user_links AS
+            SELECT * FROM read_csv_auto('{user_links_pattern}')
+        """)
+        user_links_found = True
+        print(f"Loaded user links from: {user_links_pattern}")
+    except:
+        try:
+            con.execute(f"""
+                CREATE TABLE user_links AS
+                SELECT * FROM read_csv_auto('{alt_links_pattern}')
+            """)
+            user_links_found = True
+            print(f"Loaded user links from: {alt_links_pattern}")
+        except:
+            print("No user_id_links.csv found, creating empty table")
+            con.execute("""
+                CREATE TABLE user_links AS
+                SELECT '' as user_id, '' as canonical_user_id
+                WHERE FALSE
+            """)
 
     # Step 4: Build sessions with user linking
     # Group by user per day (simplified sessionization)
