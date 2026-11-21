@@ -23,90 +23,72 @@ def main():
     con.execute("SET threads TO 8")
     con.execute("SET enable_progress_bar TO false")
 
-    # List files in DATA_DIR for debugging
     print(f"Data directory: {DATA_DIR}")
     print(f"Data exists: {DATA_DIR.exists()}")
 
     if DATA_DIR.exists():
         files = list(DATA_DIR.rglob('*'))
         print(f"Files found: {len(files)}")
-        for f in files[:20]:  # Show first 20 files
-            print(f"  {f.relative_to(DATA_DIR) if f.is_file() else f}")
+        for f in files:
+            if f.is_file():
+                print(f"  {f}")
 
-    # Step 1: Read all events using DuckDB's glob pattern
-    # Try to find events.csv first, then fall back to any csv files
-    events_pattern = f"{DATA_DIR}/events.csv"
-    alt_pattern = f"{DATA_DIR}/**/*.csv"
+    # Step 1: Find and read all event data
+    # Events are in /data/events/ as part-XXXXX.csv files
+    # Also try /data/clicks/ as alternative location
+    events_pattern = f"{DATA_DIR}/events/*.csv"
 
+    # Check which directory exists
     try:
         con.execute(f"""
-            CREATE TABLE events AS
-            SELECT * FROM read_csv_auto('{events_pattern}')
+            CREATE TABLE events_raw AS
+            SELECT * FROM read_csv_auto('{events_pattern}', union_by_name=true)
         """)
         print(f"Loaded events from: {events_pattern}")
     except Exception as e:
-        print(f"Failed to load from {events_pattern}: {e}")
-        # Try reading all CSV files in /data/
-        try:
-            con.execute(f"""
-                CREATE TABLE events AS
-                SELECT * FROM read_csv_auto('{DATA_DIR}/*.csv', hive_partitioning=true)
-            """)
-            print(f"Loaded events from: {DATA_DIR}/*.csv")
-        except Exception as e2:
-            print(f"Failed to load from {DATA_DIR}/*.csv: {e2}")
-            # Try glob pattern
-            try:
-                con.execute(f"""
-                    CREATE TABLE events AS
-                    SELECT * FROM read_csv_auto('{alt_pattern}', union_by_name=true)
-                """)
-                print(f"Loaded events from: {alt_pattern}")
-            except Exception as e3:
-                print(f"Failed to load from glob pattern: {e3}")
-                raise
+        print(f"Failed to load from events directory: {e}")
+        # Try clicks directory
+        clicks_pattern = f"{DATA_DIR}/clicks/*.csv"
+        con.execute(f"""
+            CREATE TABLE events_raw AS
+            SELECT * FROM read_csv_auto('{clicks_pattern}', union_by_name=true)
+        """)
+        print(f"Loaded events from: {clicks_pattern}")
 
-    # Get column names dynamically
-    cols = [c[0] for c in con.execute("DESCRIBE events").fetchall()]
+    # Get column names
+    cols = [c[0] for c in con.execute("DESCRIBE events_raw").fetchall()]
 
     # Step 2: Clean events - handle malformed lines
-    con.execute(f"""
+    con.execute("""
         CREATE TABLE cleaned_events AS
         SELECT
-            {', '.join(cols)},
-            COALESCE(revenue, 0) as revenue
-        FROM events
+            user_id,
+            timestamp,
+            event_type,
+            campaign_id,
+            COALESCE(revenue, 0) as revenue,
+            value
+        FROM events_raw
         WHERE timestamp IS NOT NULL
         AND user_id IS NOT NULL
     """)
 
-    # Step 3: Link user IDs (from user_id_links.csv)
-    user_links_found = False
-    user_links_pattern = f"{DATA_DIR}/user_id_links.csv"
-    alt_links_pattern = f"{DATA_DIR}/**/user_id_links.csv"
-
+    # Step 3: Link user IDs (from /data/links/ directory)
+    links_pattern = f"{DATA_DIR}/links/*.csv"
     try:
         con.execute(f"""
             CREATE TABLE user_links AS
-            SELECT * FROM read_csv_auto('{user_links_pattern}')
+            SELECT * FROM read_csv_auto('{links_pattern}', union_by_name=true)
         """)
-        user_links_found = True
-        print(f"Loaded user links from: {user_links_pattern}")
-    except:
-        try:
-            con.execute(f"""
-                CREATE TABLE user_links AS
-                SELECT * FROM read_csv_auto('{alt_links_pattern}')
-            """)
-            user_links_found = True
-            print(f"Loaded user links from: {alt_links_pattern}")
-        except:
-            print("No user_id_links.csv found, creating empty table")
-            con.execute("""
-                CREATE TABLE user_links AS
-                SELECT '' as user_id, '' as canonical_user_id
-                WHERE FALSE
-            """)
+        print(f"Loaded user links from: {links_pattern}")
+    except Exception as e:
+        print(f"Could not load from links directory: {e}")
+        # Create empty table if no links file
+        con.execute("""
+            CREATE TABLE user_links AS
+            SELECT '' as user_id, '' as canonical_user_id
+            WHERE FALSE
+        """)
 
     # Step 4: Build sessions with user linking
     # Group by user per day (simplified sessionization)
